@@ -1,7 +1,6 @@
 import streamlit as st
-import json
-import os
 from datetime import datetime
+from connect import run_query, run_mutation
 
 # ── Configuración de página ──────────────────────────────────────────────────
 st.set_page_config(
@@ -24,58 +23,51 @@ h1, h2, h3 { font-family: 'Syne', sans-serif; }
     border-radius: 8px;
     padding: 12px 16px;
     margin-bottom: 10px;
-    transition: border-color 0.2s;
 }
-.task-card.done {
-    border-left-color: #4ade80;
-    opacity: 0.65;
-}
+.task-card.done  { border-left-color: #4ade80; opacity: 0.65; }
 .task-card.alta  { border-left-color: #f87171; }
 .task-card.media { border-left-color: #fbbf24; }
 .task-card.baja  { border-left-color: #60a5fa; }
 
-.badge {
-    display: inline-block;
-    padding: 2px 8px;
-    border-radius: 99px;
-    font-size: 11px;
-    font-weight: 600;
-    letter-spacing: .4px;
-}
+.badge { display:inline-block; padding:2px 8px; border-radius:99px; font-size:11px; font-weight:600; }
 .badge-alta  { background:#fee2e2; color:#b91c1c; }
 .badge-media { background:#fef3c7; color:#92400e; }
 .badge-baja  { background:#dbeafe; color:#1d4ed8; }
 
-.stats-row {
-    display: flex;
-    gap: 16px;
-    margin-bottom: 24px;
-}
-.stat-box {
-    flex: 1;
-    background: #1a1a2e;
-    color: white;
-    border-radius: 12px;
-    padding: 14px 18px;
-    text-align: center;
-}
+.stats-row { display:flex; gap:16px; margin-bottom:24px; }
+.stat-box  { flex:1; background:#1a1a2e; color:white; border-radius:12px; padding:14px 18px; text-align:center; }
 .stat-box .num { font-family:'Syne',sans-serif; font-size:28px; font-weight:800; }
 .stat-box .lbl { font-size:12px; opacity:.7; margin-top:2px; }
 </style>
 """, unsafe_allow_html=True)
 
-# ── Persistencia en archivo JSON ─────────────────────────────────────────────
-DATA_FILE = "tareas.json"
 
+# ── Funciones de base de datos ───────────────────────────────────────────────
 def cargar_tareas():
-    if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return []
+    filas = run_query(
+        "SELECT id, titulo, descripcion, prioridad, categoria, hecho, fecha FROM tareas ORDER BY fecha DESC;"
+    )
+    return [
+        {"id": r[0], "titulo": r[1], "descripcion": r[2],
+         "prioridad": r[3], "categoria": r[4], "hecho": r[5], "fecha": r[6]}
+        for r in filas
+    ]
 
-def guardar_tareas(tareas):
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(tareas, f, ensure_ascii=False, indent=2)
+def agregar_tarea(t):
+    run_mutation(
+        "INSERT INTO tareas (id, titulo, descripcion, prioridad, categoria, hecho, fecha) VALUES (%s,%s,%s,%s,%s,%s,%s);",
+        (t["id"], t["titulo"], t["descripcion"], t["prioridad"], t["categoria"], t["hecho"], t["fecha"])
+    )
+
+def toggle_tarea(id, hecho):
+    run_mutation("UPDATE tareas SET hecho = %s WHERE id = %s;", (hecho, id))
+
+def eliminar_tarea(id):
+    run_mutation("DELETE FROM tareas WHERE id = %s;", (id,))
+
+def limpiar_completadas():
+    run_mutation("DELETE FROM tareas WHERE hecho = TRUE;")
+
 
 # ── Estado de sesión ─────────────────────────────────────────────────────────
 if "tareas" not in st.session_state:
@@ -87,8 +79,8 @@ st.markdown("---")
 
 # ── Estadísticas ─────────────────────────────────────────────────────────────
 tareas = st.session_state.tareas
-total     = len(tareas)
-pendientes = sum(1 for t in tareas if not t["hecho"])
+total       = len(tareas)
+pendientes  = sum(1 for t in tareas if not t["hecho"])
 completadas = total - pendientes
 
 st.markdown(f"""
@@ -114,16 +106,16 @@ with st.expander("➕ Agregar nueva tarea", expanded=(total == 0)):
         if enviado:
             if titulo.strip():
                 nueva = {
-                    "id": datetime.now().strftime("%Y%m%d%H%M%S%f"),
-                    "titulo": titulo.strip(),
+                    "id":          datetime.now().strftime("%Y%m%d%H%M%S%f"),
+                    "titulo":      titulo.strip(),
                     "descripcion": descripcion.strip(),
-                    "prioridad": prioridad,
-                    "categoria": categoria.strip(),
-                    "hecho": False,
-                    "fecha": datetime.now().strftime("%d/%m/%Y %H:%M"),
+                    "prioridad":   prioridad,
+                    "categoria":   categoria.strip(),
+                    "hecho":       False,
+                    "fecha":       datetime.now().strftime("%d/%m/%Y %H:%M"),
                 }
-                st.session_state.tareas.insert(0, nueva)
-                guardar_tareas(st.session_state.tareas)
+                agregar_tarea(nueva)
+                st.session_state.tareas = cargar_tareas()
                 st.success("Tarea agregada ✓")
                 st.rerun()
             else:
@@ -134,17 +126,9 @@ st.markdown("---")
 # ── Filtros ───────────────────────────────────────────────────────────────────
 col_f1, col_f2 = st.columns([1, 1])
 with col_f1:
-    filtro_estado = st.selectbox(
-        "Mostrar",
-        ["Todas", "Pendientes", "Completadas"],
-        label_visibility="collapsed",
-    )
+    filtro_estado = st.selectbox("Mostrar", ["Todas", "Pendientes", "Completadas"], label_visibility="collapsed")
 with col_f2:
-    filtro_prioridad = st.selectbox(
-        "Prioridad",
-        ["Todas las prioridades", "alta", "media", "baja"],
-        label_visibility="collapsed",
-    )
+    filtro_prioridad = st.selectbox("Prioridad", ["Todas las prioridades", "alta", "media", "baja"], label_visibility="collapsed")
 
 # ── Lista de tareas ───────────────────────────────────────────────────────────
 tareas_filtradas = list(st.session_state.tareas)
@@ -181,24 +165,19 @@ else:
         with col_a:
             label_toggle = "↩ Marcar pendiente" if tarea["hecho"] else "✓ Completar"
             if st.button(label_toggle, key=f"toggle_{tarea['id']}"):
-                for t in st.session_state.tareas:
-                    if t["id"] == tarea["id"]:
-                        t["hecho"] = not t["hecho"]
-                        break
-                guardar_tareas(st.session_state.tareas)
+                toggle_tarea(tarea["id"], not tarea["hecho"])
+                st.session_state.tareas = cargar_tareas()
                 st.rerun()
         with col_c:
             if st.button("🗑 Eliminar", key=f"del_{tarea['id']}"):
-                st.session_state.tareas = [
-                    t for t in st.session_state.tareas if t["id"] != tarea["id"]
-                ]
-                guardar_tareas(st.session_state.tareas)
+                eliminar_tarea(tarea["id"])
+                st.session_state.tareas = cargar_tareas()
                 st.rerun()
 
 # ── Pie ───────────────────────────────────────────────────────────────────────
 if completadas > 0:
     st.markdown("---")
     if st.button("🧹 Limpiar completadas"):
-        st.session_state.tareas = [t for t in st.session_state.tareas if not t["hecho"]]
-        guardar_tareas(st.session_state.tareas)
+        limpiar_completadas()
+        st.session_state.tareas = cargar_tareas()
         st.rerun()
